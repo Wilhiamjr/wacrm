@@ -23,6 +23,13 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Switch } from '@/components/ui/switch';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { SettingsPanelHead } from './settings-panel-head';
 import {
   Accordion,
@@ -36,6 +43,7 @@ const MASKED_TOKEN = '••••••••••••••••';
 
 type ConnectionStatus = 'connected' | 'disconnected' | 'unknown';
 type ResetReason = 'token_corrupted' | 'meta_api_error' | null;
+type WhatsAppProvider = 'meta' | 'waha';
 
 export function WhatsAppConfig() {
   const t = useTranslations('Settings.whatsapp');
@@ -76,6 +84,15 @@ export function WhatsAppConfig() {
   const [verifyToken, setVerifyToken] = useState('');
   const [pin, setPin] = useState('');
   const [tokenEdited, setTokenEdited] = useState(false);
+
+  // Provider selection (migration 040): 'meta' (Cloud API, default) or
+  // 'waha' (self-hosted WhatsApp HTTP API). WAHA configures a session
+  // through /api/whatsapp/waha/config-session instead of the Meta form.
+  const [provider, setProvider] = useState<WhatsAppProvider>('meta');
+  const [wahaBaseUrl, setWahaBaseUrl] = useState('');
+  const [wahaApiKey, setWahaApiKey] = useState('');
+  const [wahaSessionName, setWahaSessionName] = useState('');
+  const [wahaConnecting, setWahaConnecting] = useState(false);
 
   // Inbound-media mirror (issue #466). Unlike everything else on this
   // page it is NOT part of handleSave: that path insists on re-entering
@@ -132,6 +149,13 @@ export function WhatsAppConfig() {
 
       if (data) {
         setConfig(data);
+        setProvider(data.provider === 'waha' ? 'waha' : 'meta');
+        const pc = (data.provider_config ?? {}) as Record<string, unknown>;
+        setWahaBaseUrl(typeof pc.baseUrl === 'string' ? pc.baseUrl : '');
+        setWahaApiKey(typeof pc.apiKey === 'string' ? pc.apiKey : '');
+        setWahaSessionName(
+          typeof pc.sessionName === 'string' ? pc.sessionName : ''
+        );
         setPhoneNumberId(data.phone_number_id || '');
         setWabaId(data.waba_id || '');
         setAccessToken(MASKED_TOKEN);
@@ -143,6 +167,10 @@ export function WhatsAppConfig() {
         setMirrorMedia(data.mirror_inbound_media !== false);
       } else {
         setConfig(null);
+        setProvider('meta');
+        setWahaBaseUrl('');
+        setWahaApiKey('');
+        setWahaSessionName('');
         setPhoneNumberId('');
         setWabaId('');
         setAccessToken('');
@@ -226,7 +254,54 @@ export function WhatsAppConfig() {
     }
   }
 
+  async function handleSaveWaha() {
+    if (!wahaBaseUrl.trim() || !wahaApiKey.trim() || !wahaSessionName.trim()) {
+      toast.error(t('wahaRequiresFields'));
+      return;
+    }
+
+    try {
+      setWahaConnecting(true);
+      const res = await fetch('/api/whatsapp/waha/config-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          baseUrl: wahaBaseUrl.trim(),
+          apiKey: wahaApiKey.trim(),
+          sessionName: wahaSessionName.trim(),
+        }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        toast.error(data.error || 'Failed to connect the WAHA session', {
+          duration: 10000,
+        });
+        return;
+      }
+
+      if (data.status === 'SCAN_QR_CODE' && data.qr_url) {
+        toast.success(t('wahaScan'), { duration: 12000 });
+      } else if (data.connected) {
+        toast.success(t('wahaConnected'));
+      } else {
+        toast.success(t('wahaSessionSaved'));
+      }
+
+      if (accountId) await fetchConfig(accountId);
+    } catch (err) {
+      console.error('WAHA connect error:', err);
+      toast.error(t('wahaUnreachable', { message: (err as Error).message }));
+    } finally {
+      setWahaConnecting(false);
+    }
+  }
+
   async function handleSave() {
+    if (provider === 'waha') {
+      await handleSaveWaha();
+      return;
+    }
     if (!phoneNumberId.trim()) {
       toast.error('Phone Number ID is required');
       return;
@@ -394,6 +469,10 @@ export function WhatsAppConfig() {
 
       toast.success('Configuration cleared. You can now re-enter your credentials.');
       setConfig(null);
+      setProvider('meta');
+      setWahaBaseUrl('');
+      setWahaApiKey('');
+      setWahaSessionName('');
       setPhoneNumberId('');
       setWabaId('');
       setAccessToken('');
@@ -489,9 +568,13 @@ export function WhatsAppConfig() {
           </div>
           <AlertDescription className="text-muted-foreground">
             {connectionStatus === 'connected'
-              ? t('connectedDesc')
+              ? provider === 'waha'
+                ? t('wahaConnectedDesc')
+                : t('connectedDesc')
               : statusMessage ||
-                t('notConnectedDesc')}
+                (provider === 'waha'
+                  ? t('wahaNotConnectedDesc')
+                  : t('notConnectedDesc'))}
           </AlertDescription>
         </Alert>
 
@@ -500,7 +583,7 @@ export function WhatsAppConfig() {
             without a successful /register call the number won't
             receive inbound events. Surface this dimension separately
             so users don't trust a misleading green banner. */}
-        {config && (
+        {config && provider === 'meta' && (
           <Alert
             className={
               isRegistered
@@ -608,6 +691,24 @@ export function WhatsAppConfig() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
+              <Label className="text-muted-foreground">{t('provider')}</Label>
+              <Select
+                value={provider}
+                onValueChange={(v) => setProvider(v as WhatsAppProvider)}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="meta">{t('providerMeta')}</SelectItem>
+                  <SelectItem value="waha">{t('providerWaha')}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {provider === 'meta' && (
+              <>
+            <div className="space-y-2">
               <Label className="text-muted-foreground">{t('phoneNumberId')}</Label>
               <Input
                 placeholder="e.g. 100234567890123"
@@ -694,6 +795,67 @@ export function WhatsAppConfig() {
                 <span dangerouslySetInnerHTML={{ __html: t('pinHint') }} />
               </p>
             </div>
+              </>
+            )}
+
+            {provider === 'waha' && (
+              <>
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">{t('wahaBaseUrl')}</Label>
+                  <Input
+                    placeholder="https://your-waha-server:3000"
+                    value={wahaBaseUrl}
+                    onChange={(e) => setWahaBaseUrl(e.target.value)}
+                    className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {t('wahaBaseUrlHint')}
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">{t('wahaApiKey')}</Label>
+                  <Input
+                    type="password"
+                    placeholder={t('wahaApiKeyPlaceholder')}
+                    value={wahaApiKey}
+                    onChange={(e) => setWahaApiKey(e.target.value)}
+                    className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {t('wahaApiKeyHint')}
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">{t('wahaSessionName')}</Label>
+                  <Input
+                    placeholder="e.g. main"
+                    value={wahaSessionName}
+                    onChange={(e) => setWahaSessionName(e.target.value)}
+                    className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {t('wahaSessionNameHint')}
+                  </p>
+                </div>
+
+                <Button
+                  onClick={handleSaveWaha}
+                  disabled={wahaConnecting}
+                  className="bg-primary hover:bg-primary/90 text-primary-foreground"
+                >
+                  {wahaConnecting ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" />
+                      {t('connecting')}
+                    </>
+                  ) : (
+                    t('connectSession')
+                  )}
+                </Button>
+              </>
+            )}
           </CardContent>
         </Card>
 
@@ -831,6 +993,8 @@ export function WhatsAppConfig() {
             </CardDescription>
           </CardHeader>
           <CardContent>
+            {provider === 'meta' ? (
+              <>
             <Accordion>
               <AccordionItem className="border-border">
                 <AccordionTrigger className="text-muted-foreground hover:text-foreground hover:no-underline">
@@ -912,6 +1076,27 @@ export function WhatsAppConfig() {
                 {t('metaDocs')}
               </a>
             </div>
+              </>
+            ) : (
+              <div className="space-y-3 text-sm text-muted-foreground">
+                <p>{t('wahaSidebarIntro')}</p>
+                <ol className="list-decimal list-inside space-y-1">
+                  {(['wahaStep1', 'wahaStep2', 'wahaStep3'] as const).map((k) => (
+                    <li key={k}>{t(k)}</li>
+                  ))}
+                </ol>
+                <p>{t('wahaWebhookHint')}</p>
+                <a
+                  href="https://waha.devlike.pro/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 text-sm text-primary hover:text-primary/80 transition-colors"
+                >
+                  <ExternalLink className="size-3.5" />
+                  {t('wahaDocs')}
+                </a>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

@@ -1,14 +1,11 @@
-import {
-  sendInteractiveButtons,
-  sendInteractiveList,
-  sendMediaMessage,
-  sendTextMessage,
-  type InteractiveButton,
-  type InteractiveListSection,
-  type MediaKind,
+import type {
+  InteractiveButton,
+  InteractiveListSection,
+  MediaKind,
 } from '@/lib/whatsapp/meta-api'
 import type { InteractiveMessagePayload } from '@/lib/whatsapp/interactive'
-import { decrypt } from '@/lib/whatsapp/encryption'
+import { getWhatsAppProvider } from '@/lib/whatsapp/providers'
+import { ProviderUnsupportedError } from '@/lib/whatsapp/providers'
 import {
   sanitizePhoneForMeta,
   isValidE164,
@@ -18,14 +15,15 @@ import {
 import { supabaseAdmin } from './admin-client'
 
 // ------------------------------------------------------------
-// Flows-side Meta sender (interactive variants).
+// Flows-side WhatsApp sender (interactive variants).
 //
 // Mirrors src/lib/automations/meta-send.ts (engineSendText /
 // engineSendTemplate) but emits interactive button + list messages.
 // Kept separate from the automations file so the two engines don't
 // fight over each other's shape — once both stabilize, the
 // phone-variant retry + DB persistence are obvious extraction
-// candidates into a shared base.
+// candidates into a shared base. Talks to the configured provider
+// (Meta Cloud API or WAHA) via getWhatsAppProvider.
 //
 // PR #1 ships this in isolation: callers don't exist yet. PR #2
 // brings the flow runner online and wires it up. Shipping it now
@@ -91,12 +89,10 @@ export async function engineSendText(
     throw new Error('WhatsApp not configured for this account')
   }
 
-  const accessToken = decrypt(config.access_token)
+  const provider = getWhatsAppProvider(config)
 
   const attempt = async (phone: string): Promise<string> => {
-    const r = await sendTextMessage({
-      phoneNumberId: config.phone_number_id,
-      accessToken,
+    const r = await provider.sendText({
       to: phone,
       text: args.text,
     })
@@ -201,15 +197,13 @@ export async function engineSendMedia(
     throw new Error('WhatsApp not configured for this account')
   }
 
-  const accessToken = decrypt(config.access_token)
+  const provider = getWhatsAppProvider(config)
 
   const attempt = async (phone: string): Promise<string> => {
-    const r = await sendMediaMessage({
-      phoneNumberId: config.phone_number_id,
-      accessToken,
+    const r = await provider.sendMedia({
       to: phone,
       kind: args.kind,
-      link: args.link,
+      url: args.link,
       caption: args.caption,
       filename: args.filename,
     })
@@ -304,7 +298,7 @@ interface SendInteractiveListEngineArgs {
 export async function engineSendInteractiveButtons(
   args: SendInteractiveButtonsEngineArgs,
 ): Promise<{ whatsapp_message_id: string }> {
-  return sendInteractiveViaMeta({ ...args, kind: 'buttons' })
+  return sendInteractiveViaProvider({ ...args, kind: 'buttons' })
 }
 
 /**
@@ -314,14 +308,14 @@ export async function engineSendInteractiveButtons(
 export async function engineSendInteractiveList(
   args: SendInteractiveListEngineArgs,
 ): Promise<{ whatsapp_message_id: string }> {
-  return sendInteractiveViaMeta({ ...args, kind: 'list' })
+  return sendInteractiveViaProvider({ ...args, kind: 'list' })
 }
 
 type SendInput =
   | (SendInteractiveButtonsEngineArgs & { kind: 'buttons' })
   | (SendInteractiveListEngineArgs & { kind: 'list' })
 
-async function sendInteractiveViaMeta(
+async function sendInteractiveViaProvider(
   input: SendInput,
 ): Promise<{ whatsapp_message_id: string }> {
   const db = supabaseAdmin()
@@ -353,13 +347,16 @@ async function sendInteractiveViaMeta(
     throw new Error('WhatsApp not configured for this account')
   }
 
-  const accessToken = decrypt(config.access_token)
+  const provider = getWhatsAppProvider(config)
 
   const attempt = async (phone: string): Promise<string> => {
+    const sendButtons = provider.sendInteractiveButtons
+    const sendList = provider.sendInteractiveList
     if (input.kind === 'buttons') {
-      const r = await sendInteractiveButtons({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
+      if (!sendButtons) {
+        throw new ProviderUnsupportedError('interactive buttons', provider.name)
+      }
+      const r = await sendButtons.call(provider, {
         to: phone,
         bodyText: input.bodyText,
         buttons: input.buttons,
@@ -368,9 +365,10 @@ async function sendInteractiveViaMeta(
       })
       return r.messageId
     }
-    const r = await sendInteractiveList({
-      phoneNumberId: config.phone_number_id,
-      accessToken,
+    if (!sendList) {
+      throw new ProviderUnsupportedError('interactive list', provider.name)
+    }
+    const r = await sendList.call(provider, {
       to: phone,
       bodyText: input.bodyText,
       buttonLabel: input.buttonLabel,

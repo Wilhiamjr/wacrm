@@ -19,6 +19,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { BroadcastError, type BroadcastPlan } from '@/lib/whatsapp/broadcast-core';
+import { getWhatsAppProvider } from '@/lib/whatsapp/providers';
 import { decrypt } from '@/lib/whatsapp/encryption';
 import { resolveTemplateRow } from '@/lib/whatsapp/template-body';
 import { sanitizePhoneForMeta, isValidE164 } from '@/lib/whatsapp/phone-utils';
@@ -232,12 +233,16 @@ export async function planBroadcastResume(
     );
   }
 
+  let accessToken = '';
+  if (config.provider !== 'waha') {
+    accessToken = decrypt(config.access_token);
+  }
+
   const plan: BroadcastPlan = {
     broadcastId,
     templateName: broadcast.template_name,
     templateLanguage: resolvedTemplate.language,
-    phoneNumberId: config.phone_number_id,
-    accessToken: decrypt(config.access_token),
+    provider: getWhatsAppProvider(config, { accessToken }),
     templateRow: resolvedTemplate.row,
     planned: slice.map((row) => ({
       recipientRowId: row.id,

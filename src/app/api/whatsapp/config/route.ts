@@ -87,7 +87,7 @@ export async function GET() {
 
     const { data: config, error: configError } = await supabase
       .from('whatsapp_config')
-      .select('phone_number_id, access_token, status')
+      .select('phone_number_id, access_token, status, provider, provider_config')
       .eq('account_id', accountId)
       .maybeSingle()
 
@@ -108,6 +108,21 @@ export async function GET() {
         },
         { status: 200 }
       )
+    }
+
+    // WAHA accounts have no Meta credentials — report WHETHER the
+    // session is healthy instead of probing verifyPhoneNumber.
+    if (config.provider === 'waha') {
+      const { getWhatsAppProvider } = await import('@/lib/whatsapp/providers')
+      const provider = getWhatsAppProvider(config)
+      const health = await provider.verifyCredentials()
+      return NextResponse.json({
+        connected: health.valid && config.status === 'connected',
+        provider: 'waha',
+        reason: health.valid ? null : 'waha_session_not_working',
+        message: health.valid ? undefined : health.error ?? 'WAHA session is not working.',
+        session_status: config.status,
+      })
     }
 
     // Try to decrypt the stored token with the current ENCRYPTION_KEY.

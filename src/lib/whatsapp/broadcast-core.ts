@@ -18,7 +18,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { sendTemplateMessage } from '@/lib/whatsapp/meta-api';
+import { getWhatsAppProvider, type WhatsAppProvider } from '@/lib/whatsapp/providers';
 import { decrypt } from '@/lib/whatsapp/encryption';
 import {
   sanitizePhoneForMeta,
@@ -26,7 +26,7 @@ import {
   phoneVariants,
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils';
-import { resolveTemplateRow } from '@/lib/whatsapp/template-body';
+import { resolveTemplateRow, templateBodyParams, templateContentText } from '@/lib/whatsapp/template-body';
 import type { MessageTemplate } from '@/types';
 import { findOrCreateContact } from '@/lib/api/v1/contacts';
 
@@ -66,8 +66,7 @@ export interface BroadcastPlan {
   broadcastId: string;
   templateName: string;
   templateLanguage: string;
-  phoneNumberId: string;
-  accessToken: string;
+  provider: WhatsAppProvider;
   templateRow: MessageTemplate | null;
   planned: PlannedRecipient[];
   /** Phones rejected up front (invalid E.164) — counted as failed. */
@@ -122,7 +121,11 @@ export async function createBroadcast(
       400
     );
   }
-  const accessToken = decrypt(config.access_token);
+  let accessToken = '';
+  if (config.provider !== 'waha') {
+    accessToken = decrypt(config.access_token);
+  }
+  const provider = getWhatsAppProvider(config, { accessToken });
 
   // Template row (once) for header/button components; guard a
   // malformed local row rather than N identical opaque failures.
@@ -234,8 +237,7 @@ export async function createBroadcast(
     broadcastId,
     templateName,
     templateLanguage: resolvedTemplate.language,
-    phoneNumberId: config.phone_number_id,
-    accessToken,
+    provider,
     templateRow,
     planned,
     rejected,
@@ -266,15 +268,30 @@ export async function deliverBroadcast(
 
     for (const variant of variants) {
       try {
-        const result = await sendTemplateMessage({
-          phoneNumberId: plan.phoneNumberId,
-          accessToken: plan.accessToken,
-          to: variant,
-          templateName: plan.templateName,
-          language: plan.templateLanguage,
-          template: plan.templateRow ?? undefined,
-          params: recipient.params,
-        });
+        // Templates are Meta-only. Providers without sendTemplate (WAHA)
+        // render the same substituted body and send it as plain text.
+        const sendTemplate = plan.provider.sendTemplate;
+        let result;
+        if (sendTemplate) {
+          result = await sendTemplate.call(plan.provider, {
+            to: variant,
+            templateName: plan.templateName,
+            language: plan.templateLanguage,
+            template: plan.templateRow ?? undefined,
+            params: recipient.params,
+          });
+        } else {
+          const fallbackText =
+            templateContentText(
+              plan.templateRow,
+              templateBodyParams(recipient.params, null),
+              null
+            ) ?? plan.templateName;
+          result = await plan.provider.sendText({
+            to: variant,
+            text: fallbackText,
+          });
+        }
         sentMessageId = result.messageId;
         lastError = null;
         break;

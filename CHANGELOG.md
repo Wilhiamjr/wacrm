@@ -9,6 +9,42 @@ Versions follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0, `MINOR` bumps cover new modules; `PATCH` bumps cover bug fixes
 and polish.
 
+## [Unreleased]
+
+Introduces a WhatsApp **provider abstraction**: the same CRM flows now
+run on either the official Meta Cloud API or a self-hosted **WAHA**
+(WhatsApp HTTP API) number. Sending, inbound webhooks, reactions and
+media mirroring all go through one provider interface; templates stay
+Meta-only and fall back to the substituted body as plain text on WAHA.
+
+> **Migration required:** apply `supabase/migrations/040_whatsapp_provider.sql`
+> (adds `whatsapp_config.provider` + `provider_config` and relaxes the
+> NOT NULL on `phone_number_id` / `access_token` so a WAHA row needs no
+> Meta credentials).
+
+### Added
+
+- **WAHA provider.** Settings → WhatsApp now lets you pick **WAHA
+  (self-hosted)** and connect a session by Base URL / API key / session
+  name. wacrm probes the server, registers its own webhook
+  (`/api/whatsapp/waha/webhook`) on the session with a generated HMAC
+  secret, and surfaces the QR code URL when the session needs pairing.
+  Inbound messages, delivery/read ACKs, reactions and media are handled
+  exactly like Meta's — same inbox, same automations/flows/AI reply.
+- **Provider abstraction.** All outbound sends (composer, public API,
+  broadcasts + resume, automations, Flows) resolve the account's
+  provider at runtime instead of hard-coding Meta. Senders, broadcasts,
+  flows and the webhook share one normalised-event pipeline.
+- **WAHA template fallback.** Templates are Meta-only: on a WAHA number
+  the persisted body renders as a plain-text send, so campaigns and
+  flow sends still go out.
+
+### Changed
+
+- `whatsapp_config` rows carry a `provider` (`meta` default) and a
+  `provider_config` JSONB; WAHA's `apiKey`/`webhookSecret` are stored
+  AES-256-GCM-encrypted like the Meta token.
+
 ## [0.8.1] — 2026-07-10
 
 Fixes inbound chats fragmenting into multiple threads for the same

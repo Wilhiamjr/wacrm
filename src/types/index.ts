@@ -275,9 +275,19 @@ export interface MessageReaction {
 export interface WhatsAppConfig {
   id: string;
   user_id: string;
-  phone_number_id: string;
+  /** Account the config belongs to (migration 017, UNIQUE per account). */
+  account_id: string;
+  /**
+   * Meta Cloud API phone-number id. NULL for provider='waha' rows —
+   * those have no Meta credentials (migration 040 relaxed NOT NULL).
+   */
+  phone_number_id?: string;
   waba_id?: string;
-  access_token: string;
+  /**
+   * Meta Cloud API access token (AES-256-GCM encrypted). NULL for
+   * provider='waha' rows — WAHA credentials live in `provider_config`.
+   */
+  access_token?: string;
   verify_token?: string;
   status: 'connected' | 'disconnected';
   connected_at?: string;
@@ -298,6 +308,19 @@ export interface WhatsAppConfig {
    * inbound attachments expire. Migration 039.
    */
   mirror_inbound_media?: boolean;
+  /**
+   * WhatsApp backend the account talks to: 'meta' (official Cloud API,
+   * default) or 'waha' (self-hosted WhatsApp HTTP API). Migration 040.
+   * Pre-040 rows default to 'meta'.
+   */
+  provider?: 'meta' | 'waha';
+  /**
+   * Provider-specific settings. For 'waha':
+   * `{ baseUrl, apiKey, sessionName, webhookSecret }` (apiKey +
+   * webhookSecret stored encrypted). Ignored for 'meta', whose settings
+   * live on the dedicated columns above. Migration 040.
+   */
+  provider_config?: Record<string, unknown>;
 }
 
 // Raw Meta status enum. We persist this verbatim from Meta (sync + webhook)
