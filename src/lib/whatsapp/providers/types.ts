@@ -225,7 +225,9 @@ export interface WhatsAppProvider {
   sendMedia(params: SendMediaParams): Promise<SendResult>;
   sendReaction(params: SendReactionParams): Promise<void>;
   /** Optional — unsupported providers omit it and callers fall back. */
-  sendInteractiveButtons?(params: SendInteractiveButtonsParams): Promise<SendResult>;
+  sendInteractiveButtons?(
+    params: SendInteractiveButtonsParams
+  ): Promise<SendResult>;
   sendInteractiveList?(params: SendInteractiveListParams): Promise<SendResult>;
   /** Optional — templates are Meta-only. Callers render text as fallback. */
   sendTemplate?(params: SendTemplateParams): Promise<SendResult>;
@@ -238,7 +240,10 @@ export interface WhatsAppProvider {
    * an empty array for irrelevant payloads (heartbeats, unowned events…)
    * rather than throwing.
    */
-  parseWebhook(body: unknown, headers?: Record<string, string>): NormalizedInboundEvent[];
+  parseWebhook(
+    body: unknown,
+    headers?: Record<string, string>
+  ): NormalizedInboundEvent[];
   /** Provider webhook signature check. Meta verifies HMAC SHA-256. */
   verifyWebhook?(body: unknown, headers: Record<string, string>): boolean;
 
@@ -248,11 +253,17 @@ export interface WhatsAppProvider {
    */
   resolveInboundMedia(
     media: NormalizedMedia,
-    ctx: ResolveInboundMediaContext,
+    ctx: ResolveInboundMediaContext
   ): Promise<ResolveInboundMediaResult>;
 
   // ---- health / provisioning ----
   verifyCredentials(): Promise<{ valid: boolean; error?: string }>;
+  /**
+   * Optional — live session status (WAHA). Providers that pair via QR
+   * report their current engine state here so callers can distinguish
+   * "server reachable, waiting for scan" from "fully connected".
+   */
+  getSessionStatus?(): Promise<{ status?: string }>;
 }
 
 // ============================================================
@@ -265,7 +276,7 @@ export class ProviderUnsupportedError extends Error {
   constructor(operation: string, provider: string) {
     super(
       `"${operation}" is not supported by the "${provider}" provider. ` +
-        'Switch your WhatsApp configuration back to Meta to use this feature.',
+        'Switch your WhatsApp configuration back to Meta to use this feature.'
     );
     this.name = 'ProviderUnsupportedError';
     this.operation = operation;

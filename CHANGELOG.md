@@ -20,7 +20,9 @@ Meta-only and fall back to the substituted body as plain text on WAHA.
 > **Migration required:** apply `supabase/migrations/040_whatsapp_provider.sql`
 > (adds `whatsapp_config.provider` + `provider_config` and relaxes the
 > NOT NULL on `phone_number_id` / `access_token` so a WAHA row needs no
-> Meta credentials).
+> Meta credentials). Then apply
+> `supabase/migrations/041_drop_whatsapp_status_columns.sql` (drops the
+> now-write-only `status` / `connected_at` columns).
 
 ### Added
 
@@ -28,9 +30,16 @@ Meta-only and fall back to the substituted body as plain text on WAHA.
   (self-hosted)** and connect a session by Base URL / API key / session
   name. wacrm probes the server, registers its own webhook
   (`/api/whatsapp/waha/webhook`) on the session with a generated HMAC
-  secret, and surfaces the QR code URL when the session needs pairing.
+  secret, and shows the pairing QR inline when the session needs
+  pairing.
   Inbound messages, delivery/read ACKs, reactions and media are handled
   exactly like Meta's — same inbox, same automations/flows/AI reply.
+- **Inline WAHA pairing QR.** Settings → WhatsApp now renders the
+  session QR _inside the page_ (`/api/whatsapp/waha/qr` proxies the
+  WAHA image with the server's X-Api-Key, so the key never reaches the
+  browser) and polls the session every 15s until it connects, with a
+  manual refresh button — no more opening WAHA's raw QR URL, which
+  browsers can't authenticate against.
 - **Provider abstraction.** All outbound sends (composer, public API,
   broadcasts + resume, automations, Flows) resolve the account's
   provider at runtime instead of hard-coding Meta. Senders, broadcasts,
@@ -44,6 +53,88 @@ Meta-only and fall back to the substituted body as plain text on WAHA.
 - `whatsapp_config` rows carry a `provider` (`meta` default) and a
   `provider_config` JSONB; WAHA's `apiKey`/`webhookSecret` are stored
   AES-256-GCM-encrypted like the Meta token.
+- **Meta-only webhook callback card.** Settings → WhatsApp rendered the
+  "Webhook URL" card (the callback you paste into the Meta App
+  Dashboard) for every provider. It is now shown only while the
+  **Meta** provider is selected — selecting **WAHA (self-hosted)**
+  hides it, since WAHA has no App Dashboard callback and its
+  `/api/whatsapp/waha/webhook` is registered automatically on the
+  session by "Connect session".
+
+  ```tsx
+  // BEFORE — the webhook card rendered for every provider:
+  <Card>... readOnly value={webhookUrl} ...</Card>;
+
+  // AFTER — only rendered while the Meta provider is selected:
+  {
+    provider === 'meta' && <Card>... readOnly value={webhookUrl} ...</Card>;
+  }
+  ```
+
+- **Live connection health.** "Test connection" and the inbox's
+  "WhatsApp connected" banner no longer read a stored status column —
+  they query the connection live. For WAHA, `GET /api/whatsapp/config`
+  probes reachability + API key and then reports the real-time session
+  state (`WORKING` ⇒ connected); an unpaired session now explains
+  "waiting to be paired — scan the QR code" instead of a generic "API
+  connection failed".
+- **Self-healing pairing QR.** The `?format=image` proxy passes WAHA's
+  answer through for any session state instead of answering 409 outside
+  `SCAN_QR_CODE`, and the settings page reloads the image automatically
+  when the polled status flips to `SCAN_QR_CODE` (e.g. after a WAHA
+  restart) — no more broken image during the `STARTING` transition.
+
+### Removed
+
+- **Write-only `whatsapp_config.status` / `connected_at` columns.**
+  Migrated away in `041_drop_whatsapp_status_columns.sql`. `status`
+  existed only to feed the two checks above, which now derive
+  "connected" from the live provider; `connected_at` had no readers at
+  all. Dropping them keeps the schema free of "is this still used?"
+  ambiguity.
+
+### Fixed
+
+- **WAHA "Connect session" failed on a fresh setup.** The credential
+  probe required the session to already exist (`WORKING`), which a
+  brand-new WAHA instance never is — it now validates only reachability
+  - API key via the sessions list and lets the connect provision the
+    session. (WAHA core only creates sessions with `POST /api/sessions`;
+    a `PUT` against a missing session 404s, which broke the first connect.)
+
+  ```ts
+  // BEFORE — threw 404 "Session not found" when the session didn't exist yet...
+  async verifyCredentials() {
+    const session = await this.getSessionStatus(); // GET /api/sessions/{name}
+    if (session?.status !== 'WORKING') {
+      return { valid: false, error: `Session is ${session?.status}` };
+    }
+    return { valid: true };
+  }
+
+  // AFTER — validates reachability + API key only; configureSession
+  // provisions/creates the session as the next step.
+  async verifyCredentials() {
+    await this.get('/api/sessions'); // 401 ⇒ wrong key, never 404s
+    return { valid: true };
+  }
+  ```
+
+- **WAHA session provisioning now creates before updating.** `configureSession`
+  falls back to `POST /api/sessions` when the named session doesn't exist
+  yet, and keeps `PUT` for existing sessions (stopping a running one first).
+
+  ```ts
+  // BEFORE — PUT against a session that doesn't exist yet → 404:
+  await this.put(`/api/sessions/${name}`, { name, start: false, config });
+
+  // AFTER — create with POST, update an existing one with PUT:
+  if (existing) {
+    await this.put(`/api/sessions/${name}`, { name, start: false, config });
+  } else {
+    await this.post('/api/sessions', { name, start: false, config });
+  }
+  ```
 
 ## [0.8.1] — 2026-07-10
 
@@ -117,7 +208,7 @@ sidebar — it's no longer tucked inside Settings.
 - **AI Agents (sidebar).** A dedicated `/agents` area with two tabs:
   - **Playground** — a test chat to message your agent and see its
     grounded, multi-turn replies (and where it would hand off to a human)
-    *before* it ever answers a real customer. Runs the exact same path as
+    _before_ it ever answers a real customer. Runs the exact same path as
     the auto-reply bot (knowledge-base retrieval + your provider), and
     works even before you flip the master switch on, so you can try, then
     enable. Backed by `POST /api/ai/playground`.
@@ -193,7 +284,7 @@ returned to the client after saving.
 ## [0.4.0] — 2026-07-01
 
 Completes the public API (#245): **outbound event webhooks** so
-automations can *react* to activity instead of polling.
+automations can _react_ to activity instead of polling.
 
 ### Added
 
@@ -254,11 +345,11 @@ always did.
   - `POST /api/v1/broadcasts` + `GET /api/v1/broadcasts/{id}` — launch a
     template broadcast to a recipient list and poll its progress
     (`broadcasts:send`).
-  All list endpoints share one cursor-pagination contract
-  (`{ data, meta: { next_cursor } }`). No migration required — the
-  scopes already existed and the tables are unchanged. Outbound event
-  webhooks (react to inbound messages) are the remaining roadmap item.
-  See `docs/public-api.md`. ([#245](https://github.com/ArnasDon/wacrm/issues/245))
+    All list endpoints share one cursor-pagination contract
+    (`{ data, meta: { next_cursor } }`). No migration required — the
+    scopes already existed and the tables are unchanged. Outbound event
+    webhooks (react to inbound messages) are the remaining roadmap item.
+    See `docs/public-api.md`. ([#245](https://github.com/ArnasDon/wacrm/issues/245))
 
 ### Changed
 
@@ -297,8 +388,8 @@ always did.
 
 - `supabase/migrations/020_account_sharing_followups.sql` —
   composite partial indexes on `automations(account_id,
-  trigger_type) WHERE is_active` and `flows(account_id) WHERE
-  status='active'` for the engine dispatch hot path; updated
+trigger_type) WHERE is_active` and `flows(account_id) WHERE
+status='active'` for the engine dispatch hot path; updated
   `flow-media` storage RLS to allow account-member writes under
   the new path convention. Idempotent.
 
@@ -489,10 +580,10 @@ when two users on the same instance saved the same WhatsApp
 - **Inbound WhatsApp messages no longer silently disappear** when two
   users have claimed the same `phone_number_id`. Previously the
   webhook used `.single()` to look up the owning config, which errors
-  `PGRST116` for both 0 rows *and* ≥2 rows — the second user's save
+  `PGRST116` for both 0 rows _and_ ≥2 rows — the second user's save
   put the DB into the ≥2-row state and every inbound message was
-  dropped while the log misleadingly reported *"No config found for
-  phone_number_id"*. Three layers of fix: `POST /api/whatsapp/config`
+  dropped while the log misleadingly reported _"No config found for
+  phone_number_id"_. Three layers of fix: `POST /api/whatsapp/config`
   now returns **409** when another user has already claimed the
   number, the webhook lookup distinguishes 0 rows from ≥2 rows and
   logs the conflicting `user_id`s, and a new DB constraint

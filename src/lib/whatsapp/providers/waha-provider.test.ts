@@ -121,6 +121,92 @@ describe('WahaProvider outbound', () => {
   });
 });
 
+describe('WahaProvider configureSession', () => {
+  it('creates a fresh session via POST /api/sessions when it does not exist yet', async () => {
+    const { provider } = makeProvider();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('Session not found', { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'default' }), { status: 201 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ name: 'default', status: 'SCAN_QR_CODE' }), { status: 200 }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await provider.configureSession({
+      webhookUrl: 'https://app.test/api/whatsapp/waha/webhook',
+      webhookSecret: 'secret-1',
+    });
+
+    expect(fetchMock.mock.calls[0][0]).toBe('https://waha.test/api/sessions/default');
+    const [createUrl, createInit] = fetchMock.mock.calls[1];
+    expect(createUrl).toBe('https://waha.test/api/sessions');
+    expect(createInit.method).toBe('POST');
+    const body = JSON.parse(createInit.body);
+    expect(body.name).toBe('default');
+    expect(body.start).toBe(false);
+    expect(body.config.webhooks[0]).toMatchObject({
+      url: 'https://app.test/api/whatsapp/waha/webhook',
+      events: ['message', 'message.ack', 'message.reaction', 'session.status'],
+      hmac: { key: 'secret-1' },
+    });
+    expect(fetchMock.mock.calls[2][0]).toBe('https://waha.test/api/sessions/default/start');
+    expect(fetchMock.mock.calls[2][1].method).toBe('POST');
+    expect(res.status).toBe('SCAN_QR_CODE');
+    vi.unstubAllGlobals();
+  });
+
+  it('updates an existing session via PUT', async () => {
+    const { provider } = makeProvider();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ name: 'default', status: 'STOPPED' }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ name: 'default', status: 'WORKING' }), { status: 200 }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await provider.configureSession({
+      webhookUrl: 'https://app.test/h',
+      webhookSecret: 's2',
+    });
+
+    expect(fetchMock.mock.calls[1][0]).toBe('https://waha.test/api/sessions/default');
+    expect(fetchMock.mock.calls[1][1].method).toBe('PUT');
+    expect(fetchMock.mock.calls[2][0]).toBe('https://waha.test/api/sessions/default/start');
+    expect(res.status).toBe('WORKING');
+    vi.unstubAllGlobals();
+  });
+
+  it('stops a running session before rewriting its config', async () => {
+    const { provider } = makeProvider();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ name: 'default', status: 'WORKING' }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ name: 'default', status: 'WORKING' }), { status: 200 }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await provider.configureSession({ webhookUrl: 'https://app.test/h', webhookSecret: 's3' });
+
+    expect(fetchMock.mock.calls[1][0]).toBe('https://waha.test/api/sessions/default/stop');
+    expect(fetchMock.mock.calls[2][0]).toBe('https://waha.test/api/sessions/default');
+    expect(fetchMock.mock.calls[2][1].method).toBe('PUT');
+    vi.unstubAllGlobals();
+  });
+});
+
 describe('WahaProvider verifyWebhook', () => {
   it('accepts a valid sha512 HMAC and rejects tampered bodies', () => {
     const { provider } = makeProvider({ webhookSecret: 'very-secret' });
@@ -227,15 +313,27 @@ describe('WahaProvider parseWebhook', () => {
 });
 
 describe('WahaProvider verifyCredentials / resolveInboundMedia', () => {
-  it('verifyCredentials passes when the session is WORKING', async () => {
+  it('verifyCredentials passes on a reachable instance with a valid api key', async () => {
     const { provider } = makeProvider();
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ name: 'default', status: 'WORKING' }), { status: 200 }),
+      new Response(JSON.stringify({ value: [], Count: 0 }), { status: 200 }),
     );
     vi.stubGlobal('fetch', fetchMock);
     const res = await provider.verifyCredentials();
     expect(res).toEqual({ valid: true });
-    expect(fetchMock.mock.calls[0][0]).toBe('https://waha.test/api/sessions/default');
+    expect(fetchMock.mock.calls[0][0]).toBe('https://waha.test/api/sessions');
+    vi.unstubAllGlobals();
+  });
+
+  it('verifyCredentials reports invalid when the instance is unreachable', async () => {
+    const { provider } = makeProvider();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response('Unauthorized', { status: 401 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const res = await provider.verifyCredentials();
+    expect(res.valid).toBe(false);
+    expect(res.error).toBeDefined();
     vi.unstubAllGlobals();
   });
 

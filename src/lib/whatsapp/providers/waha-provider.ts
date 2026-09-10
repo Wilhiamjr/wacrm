@@ -329,17 +329,18 @@ export class WahaProvider implements WhatsAppProvider {
 
   // ---- health / provisioning ----
 
+  /**
+   * Validate the WAHA credentials (reachability + API key) WITHOUT
+   * requiring the named session to exist yet. A fresh session is
+   * provisioned by `configureSession`, so probing the session's own
+   * endpoint would 404 for a brand-new setup and wrongly fail the
+   * connect. The sessions list answers 401 for a bad api key and does
+   * not depend on any particular session existing.
+   */
   async verifyCredentials(): Promise<{ valid: boolean; error?: string }> {
     try {
-      const session = await this.getSessionStatus();
-      if (session?.status === 'WORKING') return { valid: true };
-      return {
-        valid: false,
-        error: `Session "${this.cfg.sessionName}" is ${session?.status ?? 'unknown'}.` +
-          (session?.status === 'SCAN_QR_CODE'
-            ? ' Scan the QR code in WAHA to pair the number.'
-            : ''),
-      };
+      await this.get('/api/sessions');
+      return { valid: true };
     } catch (err) {
       return {
         valid: false,
@@ -363,8 +364,20 @@ export class WahaProvider implements WhatsAppProvider {
     webhookSecret: string;
   }): Promise<WahaSessionInfo> {
     const existing = await this.getSessionStatus().catch(() => null);
+
+    const config = {
+      webhooks: [
+        {
+          url: options.webhookUrl,
+          events: ['message', 'message.ack', 'message.reaction', 'session.status'],
+          hmac: { key: options.webhookSecret },
+          retries: { policy: 'constant', delaySeconds: 2, attempts: 8 },
+        },
+      ],
+    };
+
     if (existing?.status && existing.status !== 'STOPPED' && existing.status !== 'FAILED') {
-      // Silently stop so a PUT can rewrite the webhook without a
+      // Silently stop so the config can be rewritten without a
       // "session already running" error; WAHA restarts it automatically.
       await this.post(
         `/api/sessions/${encodeURIComponent(this.cfg.sessionName!)}/stop`,
@@ -372,20 +385,22 @@ export class WahaProvider implements WhatsAppProvider {
       ).catch(() => undefined);
     }
 
-    await this.put(`/api/sessions/${encodeURIComponent(this.cfg.sessionName!)}`, {
-      name: this.cfg.sessionName,
-      start: false,
-      config: {
-        webhooks: [
-          {
-            url: options.webhookUrl,
-            events: ['message', 'message.ack', 'message.reaction', 'session.status'],
-            hmac: { key: options.webhookSecret },
-            retries: { policy: 'constant', delaySeconds: 2, attempts: 8 },
-          },
-        ],
-      },
-    });
+    if (existing) {
+      // Update an existing session's config.
+      await this.put(`/api/sessions/${encodeURIComponent(this.cfg.sessionName!)}`, {
+        name: this.cfg.sessionName,
+        start: false,
+        config,
+      });
+    } else {
+      // Brand-new session: WAHA core only CREATES via POST /api/sessions —
+      // a PUT 404s for a session that doesn't exist yet.
+      await this.post('/api/sessions', {
+        name: this.cfg.sessionName,
+        start: false,
+        config,
+      });
+    }
 
     await this.post(
       `/api/sessions/${encodeURIComponent(this.cfg.sessionName!)}/start`,

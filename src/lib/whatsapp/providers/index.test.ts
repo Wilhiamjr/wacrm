@@ -28,7 +28,6 @@ function config(over: Partial<WhatsAppConfig>): WhatsAppConfig {
     user_id: 'u-1',
     phone_number_id: 'pn-1',
     access_token: encrypt('tok-1'),
-    status: 'connected',
     ...over,
   } as WhatsAppConfig;
 }
@@ -49,15 +48,19 @@ describe('getWhatsAppProvider', () => {
     const p = getWhatsAppProvider(
       config({
         provider: 'waha',
-        provider_config: { baseUrl: 'http://localhost:3000', apiKey: 'k', sessionName: 'sessions' },
-      }),
+        provider_config: {
+          baseUrl: 'http://localhost:3000',
+          apiKey: 'k',
+          sessionName: 'sessions',
+        },
+      })
     );
     expect(p.name).toBe('waha');
   });
 
   it('throws ProviderConfigurationError for an unknown provider', () => {
     expect(() =>
-      getWhatsAppProvider(config({ provider: 'telegram' as never })),
+      getWhatsAppProvider(config({ provider: 'telegram' as never }))
     ).toThrow(ProviderConfigurationError);
   });
 });
@@ -66,14 +69,23 @@ describe('isProviderConfigReady', () => {
   it('meta needs phone_number_id + access_token', () => {
     expect(isProviderConfigReady(config({ provider: 'meta' }))).toBe(true);
     expect(
-      isProviderConfigReady(config({ phone_number_id: '', access_token: '', provider: 'meta' })),
+      isProviderConfigReady(
+        config({ phone_number_id: '', access_token: '', provider: 'meta' })
+      )
     ).toBe(false);
   });
 
   it('waha needs baseUrl + apiKey + sessionName', () => {
     expect(
-      isProviderConfigReady(config({ provider: 'waha', provider_config: { baseUrl: 'x', apiKey: 'y', sessionName: 'z' } })),
+      isProviderConfigReady(
+        config({
+          provider: 'waha',
+          provider_config: { baseUrl: 'x', apiKey: 'y', sessionName: 'z' },
+        })
+      )
     ).toBe(true);
-    expect(isProviderConfigReady(config({ provider: 'waha', provider_config: {} }))).toBe(false);
+    expect(
+      isProviderConfigReady(config({ provider: 'waha', provider_config: {} }))
+    ).toBe(false);
   });
 });

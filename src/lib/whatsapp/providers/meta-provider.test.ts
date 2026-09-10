@@ -36,19 +36,27 @@ vi.mock('@/lib/whatsapp/meta-api', () => ({
   sendReactionMessage,
   downloadMedia,
   getMediaUrl,
-  sendInteractiveButtons: vi.fn().mockResolvedValue({ messageId: 'wamid-btns' }),
+  sendInteractiveButtons: vi
+    .fn()
+    .mockResolvedValue({ messageId: 'wamid-btns' }),
   sendInteractiveList: vi.fn().mockResolvedValue({ messageId: 'wamid-list' }),
   verifyPhoneNumber: vi.fn().mockResolvedValue({ id: 'pn-1' }),
 }));
 
-function storage(): MirrorStorage & { uploaded: { path: string; contentType: string }[] } {
+function storage(): MirrorStorage & {
+  uploaded: { path: string; contentType: string }[];
+} {
   const uploaded: { path: string; contentType: string }[] = [];
   const bucket = {
-    upload: vi.fn(async (path: string, _body: Buffer, opts: { contentType: string }) => {
-      uploaded.push({ path, contentType: opts.contentType });
-      return { error: null };
+    upload: vi.fn(
+      async (path: string, _body: Buffer, opts: { contentType: string }) => {
+        uploaded.push({ path, contentType: opts.contentType });
+        return { error: null };
+      }
+    ),
+    getPublicUrl: (path: string) => ({
+      data: { publicUrl: `https://cdn/${path}` },
     }),
-    getPublicUrl: (path: string) => ({ data: { publicUrl: `https://cdn/${path}` } }),
   };
   return { from: () => bucket, uploaded } as unknown as MirrorStorage & {
     uploaded: { path: string; contentType: string }[];
@@ -61,7 +69,6 @@ function config(over: Partial<WhatsAppConfig> = {}): WhatsAppConfig {
     user_id: 'u-1',
     phone_number_id: 'pn-1',
     access_token: encrypt('tok-1'),
-    status: 'connected',
     ...over,
   } as WhatsAppConfig;
 }
@@ -72,7 +79,11 @@ describe('MetaCloudProvider outbound', () => {
     const res = await p.sendText({ to: '5511987654321', text: 'oi' });
     expect(res.messageId).toBe('wamid-text');
     expect(sendTextMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ phoneNumberId: 'pn-1', accessToken: 'tok-1', to: '5511987654321' }),
+      expect.objectContaining({
+        phoneNumberId: 'pn-1',
+        accessToken: 'tok-1',
+        to: '5511987654321',
+      })
     );
   });
 
@@ -85,15 +96,26 @@ describe('MetaCloudProvider outbound', () => {
       caption: 'foto',
     });
     expect(sendMediaMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'image', link: 'https://cdn/x.jpg', caption: 'foto' }),
+      expect.objectContaining({
+        kind: 'image',
+        link: 'https://cdn/x.jpg',
+        caption: 'foto',
+      })
     );
   });
 
   it('sendTemplate delegates raw params', async () => {
     const p = new MetaCloudProvider({ config: config() });
-    await p.sendTemplate({ to: '5511987654321', templateName: 'order_update', params: ['A123'] });
+    await p.sendTemplate({
+      to: '5511987654321',
+      templateName: 'order_update',
+      params: ['A123'],
+    });
     expect(sendTemplateMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ templateName: 'order_update', params: ['A123'] }),
+      expect.objectContaining({
+        templateName: 'order_update',
+        params: ['A123'],
+      })
     );
   });
 
@@ -101,13 +123,21 @@ describe('MetaCloudProvider outbound', () => {
     const p = new MetaCloudProvider({ config: config() });
     await p.sendReaction({ targetMessageId: 'wamid-1', emoji: '👍' });
     expect(sendReactionMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ to: '', targetMessageId: 'wamid-1', emoji: '👍' }),
+      expect.objectContaining({
+        to: '',
+        targetMessageId: 'wamid-1',
+        emoji: '👍',
+      })
     );
   });
 
   it('throws when the row has no phone number or token', async () => {
-    const p = new MetaCloudProvider({ config: config({ phone_number_id: '', access_token: '' }) });
-    await expect(p.sendText({ to: 'x', text: 'oi' })).rejects.toThrow(/missing/i);
+    const p = new MetaCloudProvider({
+      config: config({ phone_number_id: '', access_token: '' }),
+    });
+    await expect(p.sendText({ to: 'x', text: 'oi' })).rejects.toThrow(
+      /missing/i
+    );
   });
 });
 
@@ -130,7 +160,9 @@ describe('MetaCloudProvider parseWebhook', () => {
                     text: { body: 'salve' },
                   },
                 ],
-                contacts: [{ profile: { name: 'Ana' }, wa_id: '5511987654321' }],
+                contacts: [
+                  { profile: { name: 'Ana' }, wa_id: '5511987654321' },
+                ],
               },
             },
           ],
@@ -253,7 +285,9 @@ describe('MetaCloudProvider parseWebhook', () => {
 describe('MetaCloudProvider verifyWebhook', () => {
   it('fails closed on a wrong signature', () => {
     const p = new MetaCloudProvider({ config: config() });
-    expect(p.verifyWebhook!('{"a":1}', { 'x-hub-signature-256': 'sha256=0000' })).toBe(false);
+    expect(
+      p.verifyWebhook!('{"a":1}', { 'x-hub-signature-256': 'sha256=0000' })
+    ).toBe(false);
   });
 });
 
@@ -262,8 +296,17 @@ describe('MetaCloudProvider resolveInboundMedia', () => {
     const st = storage();
     const p = new MetaCloudProvider({ config: config(), storage: st });
     const result = await p.resolveInboundMedia(
-      { url: '/api/whatsapp/media/media-1', mimeType: 'image/jpeg', id: 'media-1' },
-      { accountId: 'acct-1', mirrorMedia: true, messageId: 'm-1', timestamp: 1000 },
+      {
+        url: '/api/whatsapp/media/media-1',
+        mimeType: 'image/jpeg',
+        id: 'media-1',
+      },
+      {
+        accountId: 'acct-1',
+        mirrorMedia: true,
+        messageId: 'm-1',
+        timestamp: 1000,
+      }
     );
     expect(result.url).toContain('https://cdn/');
     expect(st.uploaded).toHaveLength(1);
@@ -274,7 +317,12 @@ describe('MetaCloudProvider resolveInboundMedia', () => {
     const p = new MetaCloudProvider({ config: config() });
     const result = await p.resolveInboundMedia(
       { url: '/api/whatsapp/media/media-1', mimeType: 'image/jpeg' },
-      { accountId: 'acct-1', mirrorMedia: false, messageId: 'm-1', timestamp: 1000 },
+      {
+        accountId: 'acct-1',
+        mirrorMedia: false,
+        messageId: 'm-1',
+        timestamp: 1000,
+      }
     );
     expect(result.url).toBe('/api/whatsapp/media/media-1');
   });
