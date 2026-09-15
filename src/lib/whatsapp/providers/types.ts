@@ -246,6 +246,12 @@ export interface WhatsAppProvider {
   ): NormalizedInboundEvent[];
   /** Provider webhook signature check. Meta verifies HMAC SHA-256. */
   verifyWebhook?(body: unknown, headers: Record<string, string>): boolean;
+  /**
+   * Optional — WAHA only. Map a stored phone that is actually a
+   * WhatsApp LID (GOWS new format) back to the real phone number so
+   * events are persisted under a sendable identifier.
+   */
+  resolveLidPhone?(phone: string): Promise<string>;
 
   /**
    * Turn an inbound media reference into a storable URL + MIME type,

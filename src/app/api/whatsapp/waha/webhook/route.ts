@@ -99,6 +99,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ status: 'received' }, { status: 200 })
   }
 
+  // GOWS delivers new-format senders as LID (`2419…@s.whatsapp.net`),
+  // which would otherwise be persisted as a bogus "phone". Resolve each
+  // LID to the real number (`pn`) so conversations use sendable phones.
+  if (provider.resolveLidPhone) {
+    for (const ev of events) {
+      try {
+        ev.phoneNumber = await provider.resolveLidPhone(ev.phoneNumber)
+      } catch (error) {
+        console.warn('[waha-webhook] lid->phone resolution failed:', error)
+      }
+    }
+  }
+
   // Same `after()` contract as the Meta route: guarantee the work runs
   // to completion on serverless platforms instead of freezing a
   // detached promise.

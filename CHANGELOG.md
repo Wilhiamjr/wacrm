@@ -47,6 +47,18 @@ Meta-only and fall back to the substituted body as plain text on WAHA.
 - **WAHA template fallback.** Templates are Meta-only: on a WAHA number
   the persisted body renders as a plain-text send, so campaigns and
   flow sends still go out.
+- **Brazilian Portuguese (pt-BR).** The app now ships a complete
+  `pt-BR` dictionary with the same key tree as English. Install it by
+  setting `NEXT_PUBLIC_APP_LOCALE=pt-BR` (dev: restart the server;
+  Docker: rebuild with the build arg set in `docker-compose.yml`). No
+  migration required — the locale is selected at build time, so every
+  user of an instance sees the same language.
+- **ICU-safety coverage for every locale.** The i18n test now scans
+  all `messages/*.json` (previously just `en`) for strings next-intl
+  can't parse, requires each catalogue to surface the same hostile set
+  as English, and asserts `pt-BR`/`ko` expose the exact same key tree —
+  so a translation typo (stray brace, missing interpolation) can no
+  longer ship as a silently-missing label.
 
 ### Changed
 
@@ -83,6 +95,11 @@ Meta-only and fall back to the substituted body as plain text on WAHA.
   `SCAN_QR_CODE`, and the settings page reloads the image automatically
   when the polled status flips to `SCAN_QR_CODE` (e.g. after a WAHA
   restart) — no more broken image during the `STARTING` transition.
+- **WAHA runs on the GOWS engine.** The self-hosted WAHA number now
+  pairs on WAHA's recommended **GOWS** engine (Golang / whatsmeow)
+  instead of the legacy `WEBJS` one — the engine WAHA recommends for
+  WhatsApp's LID (Linked ID) rollout. No wacrm code changed; re-pair the
+  session (scan the QR) after pulling.
 
 ### Removed
 
@@ -94,6 +111,26 @@ Meta-only and fall back to the substituted body as plain text on WAHA.
   ambiguity.
 
 ### Fixed
+
+- **WAHA/GOWS sends failed with "no LID found for …".** WhatsApp's LID
+  rollout makes the GOWS engine deliver inbound senders as
+  `LID@s.whatsapp.net` (e.g. `241914251087892@s.whatsapp.net`) — a 14+
+  digit identifier, not a phone. Those digits were being persisted as
+  the contact's phone, so replies went out as `LID@c.us` and WAHA
+  couldn't map them back to a phone:
+  - `WahaProvider` now resolves LID identifiers to the real linked phone
+    (`GET /api/{session}/lids/{lid}` → `{ pn }`) before every outbound
+    send (`sendText`/media/buttons/list/seen) and falls back to `@c.us`
+    when the number isn't actually a LID.
+  - The WAHA webhook resolves inbound LIDs to the linked phone before
+    persisting, so conversations are keyed by a sendable number.
+  - `scripts/fix-waha-lid-phones.mjs` repairs contacts already stored
+    with LID digits (renames them to the real phone, or merges into the
+    existing contact when one shares the phone). Idempotent.
+- **WAHA HTTP 401 everywhere after rotating WAHA's API key.** The
+  provider reads `provider_config.apiKey`, so re-keying the WAHA
+  container breaks every WAHA call until the saved config is updated.
+  Updated the stored `apiKey` to match the container.
 
 - **WAHA "Connect session" failed on a fresh setup.** The credential
   probe required the session to already exist (`WORKING`), which a
@@ -135,6 +172,14 @@ Meta-only and fall back to the substituted body as plain text on WAHA.
     await this.post('/api/sessions', { name, start: false, config });
   }
   ```
+
+- **WAHA webhook registration survives restarts.** "Connect session"
+  points WAHA's webhook at a URL reachable from inside the WAHA
+  container (the LAN IP / public domain) instead of a throwaway tunnel,
+  so inbound messages no longer 404 into a dead ngrok URL. **Session
+  name is now persisted** (`provider_config.sessionName`) and "Connect
+  session" passes it explicitly, fixing sends to a nonexistent
+  `Session "default"`.
 
 ## [0.8.1] — 2026-07-10
 

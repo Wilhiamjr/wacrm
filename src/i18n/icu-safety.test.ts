@@ -18,31 +18,62 @@ import { createTranslator } from 'next-intl';
 // `t.rich()` (tag handlers). This test fails when one is wired to plain
 // `t()`. Reported by @Arifuzzamanjoy in #421.
 
-const MESSAGES = join(process.cwd(), 'messages', 'en.json');
+const MESSAGES_DIR = join(process.cwd(), 'messages');
 const SRC = join(process.cwd(), 'src');
 
-/** Leaf keypaths whose value next-intl cannot parse as an ICU message. */
-function icuHostileKeys(): string[] {
-  const catalogue = JSON.parse(readFileSync(MESSAGES, 'utf8'));
+type IntlMessages = NonNullable<
+  Parameters<typeof createTranslator>[0]['messages']
+>;
+
+function catalogues(): {
+  locale: string;
+  file: string;
+  messages: IntlMessages;
+}[] {
+  return readdirSync(MESSAGES_DIR)
+    .filter((file) => file.endsWith('.json'))
+    .sort()
+    .map((file) => ({
+      locale: file.slice(0, -5),
+      file,
+      messages: JSON.parse(
+        readFileSync(join(MESSAGES_DIR, file), 'utf8')
+      ) as IntlMessages,
+    }));
+}
+
+/** Every leaf keypath (dotted) with a string value. */
+function leafKeys(root: unknown, path = ''): string[] {
   const leaves: string[] = [];
-  const walk = (node: unknown, path: string) => {
+  const walk = (node: unknown, prefix: string) => {
     if (node && typeof node === 'object' && !Array.isArray(node)) {
-      for (const [k, v] of Object.entries(node)) walk(v, path ? `${path}.${k}` : k);
+      for (const [k, v] of Object.entries(node))
+        walk(v, prefix ? `${prefix}.${k}` : k);
       return;
     }
-    if (typeof node === 'string') leaves.push(path);
+    if (typeof node === 'string') leaves.push(prefix);
   };
-  walk(catalogue, '');
+  walk(root, path);
+  return leaves;
+}
 
-  return leaves.filter((key) => {
-    let code = '';
-    const t = createTranslator({
-      locale: 'en',
-      messages: catalogue,
-      onError: (err) => {
-        code = err.code;
-      },
-    });
+/**
+ * Leaf keypaths whose value next-intl cannot parse as an ICU message.
+ * One translator per locale is reused across keys (the per-leaf creation
+ * in the old version made this suite slow and timing-sensitive).
+ */
+function icuHostileKeys(messages: IntlMessages, locale: string): string[] {
+  let code = '';
+  const t = createTranslator({
+    locale,
+    messages,
+    onError: (err) => {
+      code = err.code;
+    },
+  });
+
+  return leafKeys(messages).filter((key) => {
+    code = '';
     t(key as never);
     // INVALID_MESSAGE only — the parser could not read the string at all,
     // so no call site can rescue it. Deliberately excludes FORMATTING_ERROR,
@@ -63,10 +94,32 @@ function tsxFiles(dir: string): string[] {
 
 describe('ICU-hostile strings are not read with plain t()', () => {
   it('every {{…}} / raw-HTML message is consumed via t.raw() or t.rich()', () => {
-    const hostile = icuHostileKeys();
+    const en = catalogues().find((c) => c.locale === 'en');
+    expect(
+      en,
+      'messages/en.json must exist as the reference catalogue'
+    ).toBeDefined();
+
+    const hostileByLocale = new Map(
+      catalogues().map(
+        (c) => [c.locale, icuHostileKeys(c.messages, c.locale)] as const
+      )
+    );
+    const refHostile = hostileByLocale.get('en')!;
     // Guard the guard: if this ever hits zero the walk or the parser probe
     // has broken, and the test would pass vacuously.
-    expect(hostile.length).toBeGreaterThan(0);
+    expect(refHostile.length).toBeGreaterThan(0);
+
+    // A translation that introduces a parser-invalid string (unbalanced
+    // brace, stray HTML, …) breaks that locale alone, so each catalogue
+    // must surface exactly the same hostile set as the English reference.
+    for (const [locale, hostile] of hostileByLocale) {
+      if (locale === 'en') continue;
+      expect(
+        hostile,
+        `messages/${locale}.json diverges from en.json on ICU-hostile keys`
+      ).toEqual(refHostile);
+    }
 
     const sources = tsxFiles(SRC).map((path) => ({
       path,
@@ -75,7 +128,7 @@ describe('ICU-hostile strings are not read with plain t()', () => {
 
     const offenders: string[] = [];
 
-    for (const key of hostile) {
+    for (const key of refHostile) {
       const namespace = key.slice(0, key.lastIndexOf('.'));
       const leaf = key.slice(key.lastIndexOf('.') + 1);
 
@@ -84,24 +137,45 @@ describe('ICU-hostile strings are not read with plain t()', () => {
         // consider a file that actually opens this key's namespace. The call
         // may use a trailing sub-path (useTranslations('Settings.templates')
         // + t('config.foo')), so match on any namespace prefix.
-        const opensNamespace = [...text.matchAll(/useTranslations\(\s*['"]([^'"]+)['"]/g)].some(
-          (m) => namespace === m[1] || namespace.startsWith(`${m[1]}.`),
-        );
+        const opensNamespace = [
+          ...text.matchAll(/useTranslations\(\s*['"]([^'"]+)['"]/g),
+        ].some((m) => namespace === m[1] || namespace.startsWith(`${m[1]}.`));
         if (!opensNamespace) continue;
 
         // A plain call: `t('leaf')` or `t("a.leaf")`, but not `.raw(` / `.rich(`.
         const plainCall = new RegExp(
-          String.raw`(?<![.\w])t\(\s*['"](?:[\w.]+\.)?${leaf}['"]`,
+          String.raw`(?<![.\w])t\(\s*['"](?:[\w.]+\.)?${leaf}['"]`
         );
         if (plainCall.test(text)) {
-          offenders.push(`${key} — plain t() in ${path.replace(process.cwd() + '/', '')}`);
+          offenders.push(
+            `${key} — plain t() in ${path.replace(process.cwd() + '/', '')}`
+          );
         }
       }
     }
 
     expect(
       offenders.sort(),
-      'these render as their own keypath at runtime; use t.raw() (or t.rich() with tag handlers)',
+      'these render as their own keypath at runtime; use t.raw() (or t.rich() with tag handlers)'
     ).toEqual([]);
-  });
+  }, 180_000);
+});
+
+describe('locale catalogues stay in sync with the English reference', () => {
+  it('every messages/*.json exposes the same key tree as messages/en.json', () => {
+    const en = catalogues().find((c) => c.locale === 'en')!;
+    const enKeys = new Set(leafKeys(en.messages));
+
+    for (const c of catalogues()) {
+      if (c.locale === 'en') continue;
+      const otherKeys = leafKeys(c.messages);
+      expect(
+        {
+          missingIn_en: otherKeys.filter((k) => !enKeys.has(k)).sort(),
+          extraIn_en: [...enKeys].filter((k) => !otherKeys.includes(k)).sort(),
+        },
+        `messages/${c.file} diverges from messages/en.json`
+      ).toEqual({ missingIn_en: [], extraIn_en: [] });
+    }
+  }, 60_000);
 });

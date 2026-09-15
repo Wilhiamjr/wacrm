@@ -6,6 +6,7 @@ import type { MirrorStorage } from '@/lib/whatsapp/mirror-inbound-media';
 import {
   phoneToWahaChatId,
   wahaChatIdToPhone,
+  isLikelyLidPhone,
   WahaProvider,
 } from './waha-provider';
 
@@ -117,6 +118,67 @@ describe('WahaProvider outbound', () => {
     vi.stubGlobal('fetch', fetchMock);
     const res = await provider.sendText({ to: '5511987654321', text: 'x' });
     expect(res.messageId).toMatch(/^waha:5511987654321:/);
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('WahaProvider LID resolution', () => {
+  it('flags 14+ digit numbers as LID-like', () => {
+    expect(isLikelyLidPhone('241914251087892')).toBe(true);
+    expect(isLikelyLidPhone('241914251087892@s.whatsapp.net')).toBe(true);
+    expect(isLikelyLidPhone('37113550643311@lid')).toBe(true);
+    expect(isLikelyLidPhone('556291396257')).toBe(false);
+  });
+
+  it('sendText resolves a LID to the linked phone before posting', async () => {
+    const { provider } = makeProvider();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ lid: '241914251087892@lid', pn: '556291396257@c.us' }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'wamid-lid' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await provider.sendText({ to: '241914251087892', text: 'oi' });
+
+    expect(fetchMock.mock.calls[0][0]).toBe('https://waha.test/api/default/lids/241914251087892');
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).chatId).toBe('556291396257@c.us');
+    vi.unstubAllGlobals();
+  });
+
+  it('sendText falls back to @c.us when the LID lookup fails', async () => {
+    const { provider } = makeProvider();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('not found', { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'wamid-fb' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await provider.sendText({ to: '241914251087892', text: 'oi' });
+
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).chatId).toBe('241914251087892@c.us');
+    vi.unstubAllGlobals();
+  });
+
+  it('resolveLidPhone maps a LID back to the real phone digits', async () => {
+    const { provider } = makeProvider();
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ lid: '241914251087892@lid', pn: '556291396257@c.us' }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(provider.resolveLidPhone('241914251087892')).resolves.toBe('556291396257');
+    vi.unstubAllGlobals();
+  });
+
+  it('resolveLidPhone passes short phones through untouched', async () => {
+    const { provider } = makeProvider();
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(provider.resolveLidPhone('556291396257')).resolves.toBe('556291396257');
+    expect(fetchMock).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
 });

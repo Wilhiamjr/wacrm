@@ -96,6 +96,21 @@ export function phoneToWahaChatId(phone: string): string {
 }
 
 /**
+ * WhatsApp's LID (Linked ID) rollout: GOWS delivers new-format senders
+ * as `LID@s.whatsapp.net` (or `LID@lid`). Those identifiers are 14+
+ * digit numbers that are NOT phone numbers, and sends against them fail
+ * with "no LID found for…". Anything at/above this length is treated as
+ * a LID candidate and mapped to the real phone via WAHA's `/lids` API.
+ */
+export const LID_DIGITS_THRESHOLD = 14;
+
+/** True when a stored phone / chatId is likely a WhatsApp LID, not a phone. */
+export function isLikelyLidPhone(phoneOrChatId: string): boolean {
+  const digits = (phoneOrChatId ?? '').replace(/\D/g, '');
+  return digits.length >= LID_DIGITS_THRESHOLD;
+}
+
+/**
  * Classify a WAHA webhook `event` into our event kind, or null when
  * the event is irrelevant to the CRM.
  */
@@ -116,7 +131,6 @@ export function wahaEventKind(
 
 export class WahaProvider implements WhatsAppProvider {
   readonly name = 'waha' as const;
-
   private readonly cfg: WahaConfig;
   private readonly storage: MirrorStorage;
 
@@ -141,10 +155,52 @@ export class WahaProvider implements WhatsAppProvider {
 
   // ---- outbound ----
 
+  /**
+   * Resolve a stored phone to the chatId WAHA can send to. When the
+   * value is actually a WhatsApp LID (GOWS new format — see
+   * `isLikelyLidPhone`), ask WAHA for the linked phone number
+   * (`GET /api/{session}/lids/{lid}`) and send to that instead; WAHA
+   * answers `{ pn: "5562…@c.us" }`. Anything else keeps the `@c.us`
+   * path (or falls back to it if the LID lookup fails).
+   */
+  private async resolveSendChatId(to: string): Promise<string> {
+    const digits = to.replace(/\D/g, '');
+    if (digits.length >= LID_DIGITS_THRESHOLD) {
+      try {
+        const res = await this.get<{ pn?: string }>(this.lidPath(digits));
+        const pn = typeof res?.pn === 'string' ? res.pn : '';
+        if (pn) return pn.includes('@') ? pn : `${pn}@c.us`;
+      } catch {
+        // Not a known LID — fall through to the phone-based chatId.
+      }
+    }
+    return phoneToWahaChatId(digits);
+  }
+
+  /** Public: resolve a stored phone that is actually a LID to its digits. */
+  async resolveLidPhone(phoneOrChatId: string): Promise<string> {
+    const digits = (phoneOrChatId ?? '').replace(/\D/g, '');
+    if (digits.length < LID_DIGITS_THRESHOLD) return digits;
+    try {
+      const res = await this.get<{ pn?: string }>(this.lidPath(digits));
+      if (res?.pn) return wahaChatIdToPhone(res.pn);
+    } catch {
+      // Not a known LID.
+    }
+    return digits;
+  }
+
+  private lidPath(lidDigits: string): string {
+    const session = this.cfg.sessionName || DEFAULT_SESSION;
+    return `/api/${encodeURIComponent(session)}/lids/${encodeURIComponent(
+      lidDigits,
+    )}`;
+  }
+
   async sendText(params: SendTextParams): Promise<SendResult> {
     const body: Record<string, unknown> = {
       session: this.cfg.sessionName,
-      chatId: phoneToWahaChatId(params.to),
+      chatId: await this.resolveSendChatId(params.to),
       text: params.text,
     };
     if (params.contextMessageId) body.reply_to = params.contextMessageId;
@@ -160,7 +216,7 @@ export class WahaProvider implements WhatsAppProvider {
     if (params.kind === 'audio') {
       const data = await this.post('/api/sendVoice', {
         session: this.cfg.sessionName,
-        chatId: phoneToWahaChatId(params.to),
+        chatId: await this.resolveSendChatId(params.to),
         file: { url: params.url },
         convert: true,
       });
@@ -176,7 +232,7 @@ export class WahaProvider implements WhatsAppProvider {
 
     const data = await this.post(endpoint, {
       session: this.cfg.sessionName,
-      chatId: phoneToWahaChatId(params.to),
+      chatId: await this.resolveSendChatId(params.to),
       file: { url: params.url, filename: params.filename ?? undefined },
       caption: params.caption ?? undefined,
       convert: params.kind === 'video',
@@ -197,7 +253,7 @@ export class WahaProvider implements WhatsAppProvider {
     // sendButtons is documented as fragile; keep the payload minimal.
     const data = await this.post('/api/sendButtons', {
       session: this.cfg.sessionName,
-      chatId: phoneToWahaChatId(params.to),
+      chatId: await this.resolveSendChatId(params.to),
       body: params.bodyText,
       footer: params.footerText ?? undefined,
       buttons: params.buttons.map((b) => ({ type: 'reply', text: b.title })),
@@ -208,7 +264,7 @@ export class WahaProvider implements WhatsAppProvider {
   async sendInteractiveList(params: SendInteractiveListParams): Promise<SendResult> {
     const data = await this.post('/api/sendList', {
       session: this.cfg.sessionName,
-      chatId: phoneToWahaChatId(params.to),
+      chatId: await this.resolveSendChatId(params.to),
       message: {
         title: params.headerText ?? params.bodyText,
         description: params.bodyText,
@@ -229,7 +285,7 @@ export class WahaProvider implements WhatsAppProvider {
   async sendSeen(chatId: string): Promise<void> {
     await this.post('/api/sendSeen', {
       session: this.cfg.sessionName,
-      chatId: phoneToWahaChatId(chatId),
+      chatId: await this.resolveSendChatId(chatId),
     });
   }
 
