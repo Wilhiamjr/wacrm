@@ -1,12 +1,28 @@
-## Descrição da melhoria
-Explique o que precisa ser alterado.
-
-## Motivação
-Qual problema ou necessidade essa melhoria resolve?
-
-## Benefício esperado
-Impacto para usuário ou negócio.
-
-## Critérios de aceitação
-- [ ] Critério 1
-- [ ] Critério 2
+name: "Pedido de melhoria"
+description: "Use este template para sugerir melhorias no sistema, processo ou UI"
+title: "[Melhoria] - "
+labels: ["enhancement"]
+body:
+  - type: input
+    id: descricao
+    attributes:
+      label: "Descrição da melhoria"
+      description: "Explique o que precisa ser alterado."
+      placeholder: "Ex.: Ajustar layout da tela de login"
+  - type: textarea
+    id: motivacao
+    attributes:
+      label: "Motivação"
+      description: "Qual problema ou necessidade essa melhoria resolve?"
+  - type: textarea
+    id: beneficio
+    attributes:
+      label: "Benefício esperado"
+      description: "Impacto para usuário ou negócio."
+  - type: checkboxes
+    id: criterios
+    attributes:
+      label: "Critérios de aceitação"
+      options:
+        - label: "Critério 1"
+        - label: "Critério 2"
