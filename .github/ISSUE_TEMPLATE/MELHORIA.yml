@@ -19,10 +19,7 @@ body:
     attributes:
       label: "Benefício esperado"
       description: "Impacto para usuário ou negócio."
-  - type: checkboxes
+  - type: textarea
     id: criterios
     attributes:
       label: "Critérios de aceitação"
-      options:
-        - label: "Critério 1"
-        - label: "Critério 2"
